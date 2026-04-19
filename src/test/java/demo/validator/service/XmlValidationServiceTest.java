@@ -162,6 +162,43 @@ class XmlValidationServiceTest {
     }
 
     @Test
+    void minifiedXml_multipleItems_multipleErrors_shouldReportAll() {
+        // Minified XML with first item having 2 errors (quantity and price both invalid),
+        // second item having 1 error (quantity invalid)
+        String xml = "<?xml version=\"1.0\"?>" +
+            "<order><orderId>ORD-006</orderId><customer>Error Co</customer>" +
+            "<items>" +
+            "<item><productId>P1</productId><quantity>bad</quantity><price>not-a-price</price></item>" +
+            "<item><productId>P2</productId><quantity>invalid</quantity><price>5.00</price></item>" +
+            "</items></order>";
+
+        ValidationResponse result = service.validate(xml);
+
+        assertThat(result.valid()).isFalse();
+        assertThat(result.errors()).hasSize(3);
+
+        // First item errors
+        ValidationError firstItemQuantityError = result.errors().stream()
+                                                       .filter(e -> e.field() != null && e.field().contains("item[0]") && e.field().endsWith("quantity"))
+                                                       .findFirst()
+                                                       .orElseThrow();
+        assertThat(firstItemQuantityError.value()).isEqualTo("bad");
+
+        ValidationError firstItemPriceError = result.errors().stream()
+                                                    .filter(e -> e.field() != null && e.field().contains("item[0]") && e.field().endsWith("price"))
+                                                    .findFirst()
+                                                    .orElseThrow();
+        assertThat(firstItemPriceError.value()).isEqualTo("not-a-price");
+
+        // Second item error
+        ValidationError secondItemError = result.errors().stream()
+                                                .filter(e -> e.field() != null && e.field().contains("item[1]") && e.field().endsWith("quantity"))
+                                                .findFirst()
+                                                .orElseThrow();
+        assertThat(secondItemError.value()).isEqualTo("invalid");
+    }
+
+    @Test
     void emptyItemsList_shouldReturnError() {
         // 'items' must contain at least one 'item'
         String xml = """
