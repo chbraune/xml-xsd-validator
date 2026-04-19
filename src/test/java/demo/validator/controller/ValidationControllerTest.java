@@ -1,41 +1,57 @@
 package demo.validator.controller;
 
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
-
+import demo.validator.dto.ValidationError;
 import demo.validator.dto.ValidationResponse;
+import demo.validator.exception.GlobalExceptionHandler;
 import demo.validator.exception.ValidationException;
 import demo.validator.service.XmlValidationService;
-import java.util.List;
-import org.junit.jupiter.api.*;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.MediaType;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+
+import java.util.List;
+
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 /**
- * Slice test for {@link ValidationController}.
+ * Unit test for {@link ValidationController} using standalone MockMvc.
  *
- * <p>Uses {@code @WebMvcTest} to load only the web layer.
- * {@link XmlValidationService} is replaced by a Mockito mock
- * via {@code @MockitoBean} (Spring Boot 4 / Spring Framework 6.2+).
+ * <p>No Spring application context is started. MockMvc is built with
+ * {@link MockMvcBuilders#standaloneSetup(Object...)} which only requires
+ * {@code spring-test} – available via {@code spring-boot-starter-test}.
+ * The {@link GlobalExceptionHandler} is registered explicitly so that
+ * exception-handling behaviour is also covered.
  */
-@WebMvcTest(ValidationController.class)
+@ExtendWith(MockitoExtension.class)
 class ValidationControllerTest {
 
-    @Autowired
-    private MockMvc mockMvc;
-
-    @MockitoBean
+    @Mock
     private XmlValidationService validationService;
 
+    @InjectMocks
+    private ValidationController controller;
+
+    private MockMvc mockMvc;
+
+    @BeforeEach
+    void setUp() {
+        mockMvc = MockMvcBuilders
+                .standaloneSetup(controller)
+                .setControllerAdvice(new GlobalExceptionHandler())
+                .build();
+    }
+
     // -------------------------------------------------------------------------
-    // Test fixtures
+    // Test fixture
     // -------------------------------------------------------------------------
 
     private static final String VALID_XML = """
@@ -72,12 +88,15 @@ class ValidationControllerTest {
     }
 
     // -------------------------------------------------------------------------
-    // Schema violations
+    // Schema violations – structured error objects in the response
     // -------------------------------------------------------------------------
 
     @Test
-    void postInvalidXml_shouldReturn200AndValidFalse() throws Exception {
-        List<String> errors = List.of("[ERROR] line 4, col 10: missing element 'customer'");
+    void postInvalidXml_shouldReturn200WithStructuredErrors() throws Exception {
+        List<ValidationError> errors = List.of(
+                ValidationError.of("order.items.item.quantity", "abc",
+                        "Value 'abc' is not valid for xs:positiveInteger")
+        );
         when(validationService.validate(anyString()))
                 .thenReturn(ValidationResponse.failed(errors));
 
@@ -86,23 +105,42 @@ class ValidationControllerTest {
                         .content(VALID_XML))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.valid").value(false))
-                .andExpect(jsonPath("$.errors[0]").value("[ERROR] line 4, col 10: missing element 'customer'"));
+                .andExpect(jsonPath("$.errors[0].field").value("order.items.item.quantity"))
+                .andExpect(jsonPath("$.errors[0].value").value("abc"))
+                .andExpect(jsonPath("$.errors[0].message")
+                        .value("Value 'abc' is not valid for xs:positiveInteger"));
+    }
+
+    @Test
+    void postInvalidXml_errorWithNullFieldAndValue_shouldOmitNullsInJson() throws Exception {
+        List<ValidationError> errors = List.of(
+                ValidationError.ofMessage("XML is not well-formed: unexpected EOF")
+        );
+        when(validationService.validate(anyString()))
+                .thenReturn(ValidationResponse.failed(errors));
+
+        mockMvc.perform(post("/api/xml/validate")
+                        .contentType(MediaType.TEXT_XML)
+                        .content("broken"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.valid").value(false))
+                .andExpect(jsonPath("$.errors[0].message")
+                        .value("XML is not well-formed: unexpected EOF"));
     }
 
     // -------------------------------------------------------------------------
-    // Technical failures
+    // Technical failures → GlobalExceptionHandler → 422
     // -------------------------------------------------------------------------
 
     @Test
     void serviceThrowsValidationException_shouldReturn422() throws Exception {
         when(validationService.validate(anyString()))
-                .thenThrow(new ValidationException("XML cannot be parsed: unexpected EOF"));
+                .thenThrow(new ValidationException("XML cannot be parsed: internal SAX error"));
 
         mockMvc.perform(post("/api/xml/validate")
                         .contentType(MediaType.TEXT_XML)
-                        .content("broken xml"))
-                .andExpect(status().isUnprocessableEntity())
-                .andExpect(jsonPath("$.title").value("XML Processing Error"));
+                        .content("broken"))
+                .andExpect(status().isUnprocessableEntity());
     }
 
     // -------------------------------------------------------------------------
