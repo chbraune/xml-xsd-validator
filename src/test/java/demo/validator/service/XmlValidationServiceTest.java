@@ -115,6 +115,28 @@ class XmlValidationServiceTest {
         assertThat(result.errors()).isNotEmpty();
     }
 
+    @Test
+    void multipleSchemaViolations_shouldReturn3Errors() {
+        // Multiple violations: missing 'customer', wrong type for 'quantity' (2 errors), missing 'price'
+        String xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <order>
+                <orderId>ORD-005</orderId>
+                <items>
+                    <item>
+                        <productId>PROD-5</productId>
+                        <quantity>not-a-number</quantity>
+                    </item>
+                </items>
+            </order>
+            """;
+
+        ValidationResponse result = service.validate(xml);
+
+        assertThat(result.valid()).isFalse();
+        assertThat(result.errors()).hasSize(4);
+    }
+
     // -------------------------------------------------------------------------
     // Technical failures
     // -------------------------------------------------------------------------
